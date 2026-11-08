@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +16,10 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # packages: '' -> sirf licenses accept karo, "tools" package install mat karo (wo ab exist nahi karta)
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - uses: gradle/actions/setup-gradle@v4
         with:

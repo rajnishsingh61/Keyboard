@@ -1,19 +1,30 @@
 package com.rajnish.stylekeyboard
 
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.icu.lang.UCharacter
+import android.icu.lang.UProperty
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.text.TextUtils
 import android.view.*
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
+import java.util.Locale
 import kotlin.math.abs
+import org.json.JSONArray
+import org.json.JSONObject
 
 // ---------- palette (system dark/light follow karta hai) ----------
 private fun c(s: String) = Color.parseColor(s)
@@ -43,21 +54,64 @@ private val ALTS: Map<String, List<String>> = mapOf(
     "+" to l("± ×"), "(" to l("[ { <"), ")" to l("] } >"), "&" to l("§"), "*" to l("† ‡ ★")
 )
 
-// ---------- emoji ----------
-private val EMOJI: List<Pair<String, String>> = listOf(
-    "😀" to "😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 😉 😍 🥰 😘 😋 😛 😜 🤪 😎 🤩 🥳 😏 😒 😞 😔 😟 😕 🙁 😣 😢 😭 😤 😠 😡 🤬 😱 😨 😰 😓 🤗 🤔 🤭 🤫 😶 😐 😑 😬 🙄 😴 🤤 😷 🤒 🤕 🤢 🤮 🥵 🥶 🥴 😵 🤯 🤠 😈 👿 💀 👻 👽 🤖 💩",
-    "👍" to "👍 👎 👌 ✌ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝ ✋ 🤚 🖐 🖖 👋 🤝 🙏 👏 🙌 👐 🤲 💪 🖕 ✍ 🤳 💅 👀 👅 👄 🧠 👂 👃",
-    "❤" to "❤ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣ 💕 💞 💓 💗 💖 💘 💝 💯 💢 💥 💫 💦 💨 🔥 ✨ ⭐ 🌟 ⚡ ☀ 🌈 ☁ ❄ 🎉 🎊 🎁 🏆 🥇 🎯 💎 ✅ ❌ ❓ ❗ ➕ ➖ ➡ ⬅ ⬆ ⬇ 🔴 🟢 🔵",
-    "🐶" to "🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐔 🐧 🐦 🦆 🦅 🦉 🐺 🐴 🦄 🐝 🦋 🐌 🐞 🐢 🐍 🐙 🦀 🐠 🐬 🐳 🦈 🐘 🦒 🐪 🌸 🌹 🌻 🌲 🍀",
-    "🍔" to "🍎 🍌 🍇 🍓 🍉 🍑 🍍 🥭 🥑 🍅 🌽 🥕 🍞 🧀 🍳 🥞 🍔 🍟 🍕 🌭 🌮 🍗 🍖 🍜 🍝 🍣 🍚 🍦 🍩 🍪 🎂 🍫 🍿 ☕ 🍵 🥤 🍺 🍷",
-    "⚽" to "⚽ 🏀 🏈 ⚾ 🎾 🏐 🏏 🎱 🏓 🎮 🕹 🎲 🧩 🎯 🎳 🎤 🎧 🎸 🎹 🥁 🎬 🎨 🏋 🚴 🏊",
-    "🚗" to "🚗 🚕 🚌 🏎 🚓 🚑 🚒 🏍 🚲 🛵 ✈ 🚀 🚁 🚂 🚢 ⛵ 🏠 🏢 🏥 🏫 🏖 🏔 🌋 🗺 ⛽ 🚦",
-    "💡" to "📱 💻 ⌨ 🖥 📷 📸 🎥 📺 📻 ⏰ 💡 🔋 🔌 💰 💵 💳 🔑 🔒 🔓 🔨 🔧 ⚙ 📌 📎 ✏ 📝 📚 📦 🛒 🔔"
-)
+// ---------- emoji: device ke supported saare emoji khud generate hote hain ----------
+private object EmojiData {
+    class Cat(val icon: String, val items: List<String>)
+
+    @Volatile private var cache: List<Cat>? = null
+
+    private fun bucket(cp: Int): Int = when {
+        cp in 0x1F600..0x1F644 || cp in 0x1F910..0x1F925 || cp in 0x1F927..0x1F92F ||
+            cp in 0x1F970..0x1F97A -> 0
+        cp in 0x1F440..0x1F450 || cp in 0x1F466..0x1F487 || cp in 0x1F645..0x1F64F || cp == 0x1F926 ||
+            cp in 0x1F930..0x1F93E || cp in 0x1F9B0..0x1F9BF || cp in 0x1F9D0..0x1F9DF || cp == 0x261D ||
+            cp in 0x270A..0x270D || cp in 0x1F90C..0x1F90F || cp == 0x1F4AA -> 1
+        cp in 0x1F400..0x1F43F || cp in 0x1F980..0x1F9AF || cp in 0x1F330..0x1F344 ||
+            cp == 0x1F490 || cp == 0x1F940 -> 2
+        cp in 0x1F345..0x1F37F || cp in 0x1F950..0x1F96F || cp in 0x1F9C0..0x1F9CB || cp == 0x2615 -> 3
+        cp in 0x1F380..0x1F3D3 || cp in 0x1F3F8..0x1F3FA || cp in 0x1F94A..0x1F94F ||
+            cp == 0x26BD || cp == 0x26BE -> 4
+        cp in 0x1F300..0x1F32C || cp in 0x1F3D4..0x1F3F7 || cp in 0x1F680..0x1F6C5 ||
+            cp in 0x1F6D0..0x1F6FF || cp in 0x26F0..0x26FA || cp == 0x2708 -> 5
+        cp in 0x1F4A1..0x1F4FF || cp in 0x1F5A4..0x1F5FF || cp in 0x1F9E0..0x1F9FF ||
+            cp in 0x231A..0x23F3 -> 6
+        else -> 7
+    }
+
+    fun get(): List<Cat> {
+        cache?.let { return it }
+        val paint = Paint()
+        val b = List(8) { mutableListOf<String>() }
+        fun add(cp: Int) {
+            if (cp in 0x1F1E6..0x1F1FF || cp in 0x1F3FB..0x1F3FF) return
+            if (!UCharacter.hasBinaryProperty(cp, UProperty.EMOJI)) return
+            val pres = UCharacter.hasBinaryProperty(cp, UProperty.EMOJI_PRESENTATION)
+            val e = String(Character.toChars(cp)) + (if (pres) "" else "\uFE0F")
+            if (paint.hasGlyph(e)) b[bucket(cp)].add(e)
+        }
+        for (cp in 0x203C..0x3299) add(cp)
+        for (cp in 0x1F004..0x1FAFF) add(cp)
+
+        val flags = mutableListOf("\uD83C\uDDEE\uD83C\uDDF3")   // India pehle
+        for (cc in Locale.getISOCountries()) {
+            if (cc == "IN") continue
+            val f = String(Character.toChars(0x1F1E6 + (cc[0] - 'A'))) + String(Character.toChars(0x1F1E6 + (cc[1] - 'A')))
+            if (paint.hasGlyph(f)) flags.add(f)
+        }
+        val out = listOf(
+            Cat("😀", b[0]), Cat("👋", b[1]), Cat("🐶", b[2]), Cat("🍔", b[3]), Cat("⚽", b[4]),
+            Cat("🚗", b[5]), Cat("💡", b[6]), Cat("❤", b[7]), Cat("🏁", flags)
+        ).filter { it.items.isNotEmpty() }
+        cache = out
+        return out
+    }
+}
+
+private class Clip(val text: String, var pinned: Boolean)
 
 class StyleKeyboardService : InputMethodService() {
 
-    private enum class Page { LETTERS, SYM1, SYM2, EMOJI }
+    private enum class Page { LETTERS, SYM1, SYM2, EMOJI, CLIP }
 
     private companion object {
         const val ROW_DP = 52          // <- Gboard jaisa key-row height. Chhota/bada karna ho to yahi badlo
@@ -83,6 +137,10 @@ class StyleKeyboardService : InputMethodService() {
     private val keyViews = mutableListOf<Pair<String, TextView>>()
     private val chips = mutableMapOf<Style, TextView>()
     private var altData: List<String> = emptyList()
+    private var prefs: SharedPreferences? = null
+    private var clipboard: ClipboardManager? = null
+    private val clips = mutableListOf<Clip>()
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClip() }
 
     private val MP = ViewGroup.LayoutParams.MATCH_PARENT
     private val WC = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -123,6 +181,20 @@ class StyleKeyboardService : InputMethodService() {
     private fun toks(s: String) = s.map { it.toString() }
 
     // ---------- lifecycle ----------
+    override fun onCreate() {
+        super.onCreate()
+        prefs = getSharedPreferences("stylekb", Context.MODE_PRIVATE)
+        loadClips()
+        clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard?.addPrimaryClipChangedListener(clipListener)
+        Thread { try { EmojiData.get() } catch (t: Throwable) { } }.start()   // emoji list pehle se ready
+    }
+
+    override fun onDestroy() {
+        clipboard?.removePrimaryClipChangedListener(clipListener)
+        super.onDestroy()
+    }
+
     override fun onEvaluateFullscreenMode() = false
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -194,6 +266,14 @@ class StyleKeyboardService : InputMethodService() {
         }
         fun chipParams() = LinearLayout.LayoutParams(WC, dp(34)).apply { setMargins(dp(3), 0, dp(3), 0) }
 
+        // 📋 : clipboard history
+        row.addView(TextView(this).apply {
+            text = "📋"; textSize = 15f; gravity = Gravity.CENTER; isClickable = true
+            setPadding(dp(14), 0, dp(14), 0); background = bg(p.fn, 17)
+            layoutParams = chipParams()
+            setOnClickListener { it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); page = Page.CLIP; rebuild() }
+        })
+
         // Aa→ : selected text (ya poora text) ko current style me badalta hai
         row.addView(TextView(this).apply {
             text = "Aa→"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(p.accent)
@@ -264,6 +344,7 @@ class StyleKeyboardService : InputMethodService() {
                 rowsBox.addView(bottomRow())
             }
             Page.EMOJI -> buildEmoji()
+            Page.CLIP -> buildClip()
         }
         updateShiftView()
     }
@@ -321,10 +402,28 @@ class StyleKeyboardService : InputMethodService() {
         return r
     }
 
+    private fun panelBottom(): LinearLayout {
+        val bottom = newRow()
+        val abc = keyCell("ABC", 1.5f, p.fn, p.text, 15f)
+        bindKey(abc, tap = { page = Page.LETTERS; rebuild(); updateAutoCap() })
+        bottom.addView(abc)
+        val sp = keyCell("", 7f, p.key, p.muted, 12f)
+        bindKey(sp, tap = { space() })
+        bottom.addView(sp)
+        bottom.addView(backspaceKey())
+        return bottom
+    }
+
     private fun buildEmoji() {
         val rowPx = dp(rowDp())
+        val tabsData = mutableListOf<Pair<String, List<String>>>()
+        val recents = loadRecents()
+        if (recents.isNotEmpty()) tabsData.add("🕘" to recents)
+        EmojiData.get().forEach { tabsData.add(it.icon to it.items) }
+        if (emojiCat >= tabsData.size) emojiCat = 0
+
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        EMOJI.forEachIndexed { i, (icon, _) ->
+        tabsData.forEachIndexed { i, (icon, _) ->
             tabs.addView(TextView(this).apply {
                 text = icon; textSize = 18f; gravity = Gravity.CENTER; isClickable = true
                 background = if (i == emojiCat) shape(p.key, 8) else null
@@ -334,31 +433,143 @@ class StyleKeyboardService : InputMethodService() {
         }
         rowsBox.addView(tabs, LinearLayout.LayoutParams(MP, dp(40)))
 
-        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        EMOJI[emojiCat].second.split(" ").chunked(8).forEach { chunk ->
-            val row = newRow()
-            chunk.forEach { e ->
-                row.addView(TextView(this).apply {
-                    text = e; textSize = 24f; gravity = Gravity.CENTER; isClickable = true
-                    layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
-                    setOnClickListener { it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); commit(e) }
-                })
+        val items = tabsData[emojiCat].second
+        val ctx = this
+        val grid = GridView(this).apply {
+            numColumns = 8
+            stretchMode = GridView.STRETCH_COLUMN_WIDTH
+            selector = ColorDrawable(Color.TRANSPARENT)
+            isVerticalScrollBarEnabled = false
+            adapter = object : BaseAdapter() {
+                override fun getCount() = items.size
+                override fun getItem(position: Int): Any = items[position]
+                override fun getItemId(position: Int) = position.toLong()
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                    val tv = (convertView as? TextView) ?: TextView(ctx).apply {
+                        textSize = 24f; gravity = Gravity.CENTER
+                        layoutParams = AbsListView.LayoutParams(MP, dp(46))
+                    }
+                    tv.text = items[position]
+                    return tv
+                }
             }
-            repeat(8 - chunk.size) { row.addView(spacer(1f).apply { layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f) }) }
-            grid.addView(row)
+            onItemClickListener = AdapterView.OnItemClickListener { _, v, pos, _ ->
+                v?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                commitEmoji(items[pos])
+            }
         }
-        rowsBox.addView(ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(grid) },
-            LinearLayout.LayoutParams(MP, rowPx * 4 - dp(40)))
+        rowsBox.addView(grid, LinearLayout.LayoutParams(MP, rowPx * 4 - dp(40)))
+        rowsBox.addView(panelBottom())
+    }
 
-        val bottom = newRow()
-        val abc = keyCell("ABC", 1.5f, p.fn, p.text, 15f)
-        bindKey(abc, tap = { page = Page.LETTERS; rebuild(); updateAutoCap() })
-        bottom.addView(abc)
-        val sp = keyCell("", 7f, p.key, p.muted, 12f)
-        bindKey(sp, tap = { space() })
-        bottom.addView(sp)
-        bottom.addView(backspaceKey())
-        rowsBox.addView(bottom)
+    private fun commitEmoji(e: String) {
+        commit(e)
+        val l = loadRecents().toMutableList()
+        l.remove(e); l.add(0, e)
+        prefs?.edit()?.putString("recent_emoji", l.take(32).joinToString(" "))?.apply()
+    }
+
+    private fun loadRecents(): List<String> =
+        (prefs?.getString("recent_emoji", "") ?: "").split(" ").filter { it.isNotEmpty() }
+
+    // ---------- clipboard ----------
+    private fun buildClip() {
+        captureClip()
+        val rowPx = dp(rowDp())
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), 0, dp(6), 0)
+        }
+        header.addView(TextView(this).apply {
+            text = "Clipboard"; textSize = 16f; setTextColor(p.text)
+            layoutParams = LinearLayout.LayoutParams(0, WC, 1f)
+        })
+        header.addView(TextView(this).apply {
+            text = "Clear"; textSize = 14f; setTextColor(p.accent); isClickable = true
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener { clips.removeAll { c -> !c.pinned }; saveClips(); rebuild() }
+        })
+        rowsBox.addView(header, LinearLayout.LayoutParams(MP, dp(40)))
+
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), 0, dp(4), 0) }
+        val sorted = clips.sortedByDescending { it.pinned }
+        if (sorted.isEmpty()) {
+            list.addView(TextView(this).apply {
+                text = "Kuch copy karo, yahan dikhega"; textSize = 14f; setTextColor(p.muted)
+                gravity = Gravity.CENTER; setPadding(0, dp(40), 0, 0)
+            })
+        }
+        sorted.forEach { list.addView(clipRow(it)) }
+        rowsBox.addView(ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(list) },
+            LinearLayout.LayoutParams(MP, rowPx * 4 - dp(40)))
+        rowsBox.addView(panelBottom())
+    }
+
+    private fun clipRow(c: Clip): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(MP, WC).apply { setMargins(0, dp(3), 0, dp(3)) }
+        }
+        row.addView(TextView(this).apply {
+            text = c.text; textSize = 14f; setTextColor(p.text)
+            maxLines = 2; ellipsize = TextUtils.TruncateAt.END; isClickable = true
+            setPadding(dp(12), dp(10), dp(12), dp(10)); background = bg(p.key, 10)
+            layoutParams = LinearLayout.LayoutParams(0, WC, 1f)
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                currentInputConnection?.commitText(c.text, 1)
+                lastSpace = 0L; afterCommit()
+            }
+        })
+        row.addView(TextView(this).apply {
+            text = "📌"; textSize = 16f; gravity = Gravity.CENTER; isClickable = true
+            alpha = if (c.pinned) 1f else 0.35f
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setOnClickListener { c.pinned = !c.pinned; saveClips(); rebuild() }
+        })
+        row.addView(TextView(this).apply {
+            text = "✕"; textSize = 16f; gravity = Gravity.CENTER; isClickable = true
+            setTextColor(p.muted)
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setOnClickListener { clips.remove(c); saveClips(); rebuild() }
+        })
+        return row
+    }
+
+    /** Current copy kiya hua text history me daalta hai (sensitive-flag wale copies skip). */
+    private fun captureClip() {
+        try {
+            val clip = clipboard?.primaryClip ?: return
+            if (clip.itemCount == 0) return
+            val sensitive = clip.description?.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) ?: false
+            if (sensitive) return
+            val t = clip.getItemAt(0).coerceToText(this)?.toString()?.trim().orEmpty()
+            if (t.isEmpty() || t.length > 5000) return
+            val i = clips.indexOfFirst { it.text == t }
+            if (i == 0) return
+            if (i > 0) { val c = clips.removeAt(i); clips.add(0, c) } else clips.add(0, Clip(t, false))
+            var unpinned = 0
+            val iter = clips.iterator()
+            while (iter.hasNext()) { val c = iter.next(); if (!c.pinned && ++unpinned > 30) iter.remove() }
+            saveClips()
+        } catch (e: Throwable) { }
+    }
+
+    private fun saveClips() {
+        val arr = JSONArray()
+        clips.forEach { arr.put(JSONObject().put("t", it.text).put("p", it.pinned)) }
+        prefs?.edit()?.putString("clips", arr.toString())?.apply()
+    }
+
+    private fun loadClips() {
+        clips.clear()
+        try {
+            val arr = JSONArray(prefs?.getString("clips", "[]") ?: "[]")
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                clips.add(Clip(o.getString("t"), o.optBoolean("p", false)))
+            }
+        } catch (e: Throwable) { }
     }
 
     // ---------- touch handling (tap / repeat / long-press popup / space swipe) ----------
